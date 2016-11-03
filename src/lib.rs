@@ -31,6 +31,7 @@ struct Node<K, V> {
 enum Color {
     Red,
     Black,
+    DoubleBlack,
 }
 
 #[derive(Clone, Debug)]
@@ -70,13 +71,6 @@ impl<K, V> Tree<K, V> where K: Clone + PartialOrd + Ord, V: Clone {
 }
 
 impl<K, V> Link<K, V> where K: Clone + PartialOrd + Ord, V: Clone {
-    fn to_option(&self) -> Option<&Arc<Node<K, V>>> {
-        match *self {
-            Link::Empty => None,
-            Link::Node(ref node) => Some(node),
-        }
-    }
-
     fn get_by<F>(&self, mut compare: F) -> Option<(&K, &V)>
                  where F: for<'a> FnMut(&'a K) -> Ordering {
         match *self {
@@ -130,6 +124,20 @@ impl<K, V> Link<K, V> where K: Clone + PartialOrd + Ord, V: Clone {
         }
     }
 
+    fn is_empty_or_double_black(&self) -> bool {
+        match *self {
+            Link::Empty => true,
+            Link::Node(ref node) => node.color.is_double_black(),
+        }
+    }
+
+    fn to_option(&self) -> Option<&Arc<Node<K, V>>> {
+        match *self {
+            Link::Empty => None,
+            Link::Node(ref node) => Some(node),
+        }
+    }
+
     fn get_if_red(&self) -> Option<&Arc<Node<K, V>>> {
         match *self {
             Link::Node(ref node) if node.color.is_red() => Some(node),
@@ -137,7 +145,31 @@ impl<K, V> Link<K, V> where K: Clone + PartialOrd + Ord, V: Clone {
         }
     }
 
-    fn rearrangement(parent_key: K,
+    fn get_if_black(&self) -> Option<&Arc<Node<K, V>>> {
+        match *self {
+            Link::Node(ref node) if node.color.is_black() => Some(node),
+            Link::Node(_) | Link::Empty => None,
+        }
+    }
+
+    fn double_black_to_black(&self) -> Link<Arc<Node<K, V>>> {
+        match *self {
+            Link::Node(ref node) => {
+                debug_assert!(node.color.is_double_black());
+                Link::Node(Arc::new(Node {
+                    key: self.key.clone(),
+                    value: self.value.clone(),
+                    left: self.left.clone(),
+                    right: self.right.clone(),
+                    color: Color::Black,
+                }))
+            }
+            Link::Empty => Link::Empty,
+        }
+    }
+
+    fn rearrangement(color: Color,
+                     parent_key: K,
                      parent_value: V,
                      left_key: K,
                      left_value: V,
@@ -165,7 +197,7 @@ impl<K, V> Link<K, V> where K: Clone + PartialOrd + Ord, V: Clone {
                 right: right_right,
                 color: Color::Black,
             })),
-            color: Color::Red,
+            color: color,
         }))
     }
 }
@@ -174,65 +206,94 @@ impl Color {
     fn balance<K, V>(self, key: K, value: V, left: Link<K, V>, right: Link<K, V>) -> Link<K, V>
                      where K: Clone + PartialOrd + Ord, V: Clone {
         if self.is_black() {
-            return Link::Node(Arc::new(Node {
-                key: key,
-                value: value,
-                left: left,
-                right: right,
-                color: self,
-            }))
+            if let Some(ref left) = left.get_if_red() {
+                if let Some(ref left_left) = left.left.get_if_red() {
+                    return Link::rearrangement(Color::Red,
+                                               left.key.clone(),
+                                               left.value.clone(),
+                                               left_left.key.clone(),
+                                               left_left.value.clone(),
+                                               left_left.left.clone(),
+                                               left_left.right.clone(),
+                                               key,
+                                               value,
+                                               left.right.clone(),
+                                               right)
+                }
+                if let Some(ref left_right) = left.right.get_if_red() {
+                    return Link::rearrangement(Color::Red,
+                                               left_right.key.clone(),
+                                               left_right.value.clone(),
+                                               left.key.clone(),
+                                               left.value.clone(),
+                                               left.left.clone(),
+                                               left_right.left.clone(),
+                                               key,
+                                               value,
+                                               left_right.right.clone(),
+                                               right)
+                }
+            }
+            if let Some(ref right) = right.get_if_red() {
+                if let Some(ref right_left) = right.left.get_if_red() {
+                    return Link::rearrangement(Color::Red,
+                                               right_left.key.clone(),
+                                               right_left.value.clone(),
+                                               key,
+                                               value,
+                                               left,
+                                               right_left.left.clone(),
+                                               right.key.clone(),
+                                               right.value.clone(),
+                                               right_left.right.clone(),
+                                               right.right.clone())
+                }
+                if let Some(ref right_right) = right.right.get_if_red() {
+                    return Link::rearrangement(Color::Red,
+                                               right.key.clone(),
+                                               right.value.clone(),
+                                               key,
+                                               value,
+                                               left,
+                                               right.left.clone(),
+                                               right_right.key.clone(),
+                                               right_right.value.clone(),
+                                               right_right.left.clone(),
+                                               right_right.right.clone())
+                }
+            }
         }
 
-        if let Some(ref left) = left.get_if_red() {
-            if let Some(ref left_left) = left.left.get_if_red() {
-                return Link::rearrangement(left.key.clone(),
-                                           left.value.clone(),
-                                           left_left.key.clone(),
-                                           left_left.value.clone(),
-                                           left_left.left.clone(),
-                                           left_left.right.clone(),
-                                           key,
-                                           value,
-                                           left.right.clone(),
-                                           right)
+        if self.is_double_black() {
+            if let Some(ref left) = left.get_if_red() {
+                if let Some(ref left_right) = left.right.get_if_red() {
+                    return Link::rearrangement(Color::Black,
+                                               left_right.key.clone(),
+                                               left_right.value.clone(),
+                                               left.key.clone(),
+                                               left.value.clone(),
+                                               left.left.clone(),
+                                               left_right.left.clone(),
+                                               key,
+                                               value,
+                                               left_right.right.clone(),
+                                               right)
+                }
             }
-            if let Some(ref left_right) = left.right.get_if_red() {
-                return Link::rearrangement(left_right.key.clone(),
-                                           left_right.value.clone(),
-                                           left.key.clone(),
-                                           left.value.clone(),
-                                           left.left.clone(),
-                                           left_right.left.clone(),
-                                           key,
-                                           value,
-                                           left_right.right.clone(),
-                                           right)
-            }
-        }
-        if let Some(ref right) = right.get_if_red() {
-            if let Some(ref right_left) = right.left.get_if_red() {
-                return Link::rearrangement(right_left.key.clone(),
-                                           right_left.value.clone(),
-                                           key,
-                                           value,
-                                           left,
-                                           right_left.left.clone(),
-                                           right.key.clone(),
-                                           right.value.clone(),
-                                           right_left.right.clone(),
-                                           right.right.clone())
-            }
-            if let Some(ref right_right) = right.right.get_if_red() {
-                return Link::rearrangement(right.key.clone(),
-                                           right.value.clone(),
-                                           key,
-                                           value,
-                                           left,
-                                           right.left.clone(),
-                                           right_right.key.clone(),
-                                           right_right.value.clone(),
-                                           right_right.left.clone(),
-                                           right_right.right.clone())
+            if let Some(ref right) = right.get_if_red() {
+                if let Some(ref right_left) = right.left.get_if_red() {
+                    return Link::rearrangement(Color::Black,
+                                               right_left.key.clone(),
+                                               right_left.value.clone(),
+                                               key,
+                                               value,
+                                               left,
+                                               right_left.left.clone(),
+                                               right.key.clone(),
+                                               right.value.clone(),
+                                               right_left.right.clone(),
+                                               right.right.clone())
+                }
             }
         }
 
@@ -245,12 +306,131 @@ impl Color {
         }))
     }
 
-    fn is_red(&self) -> bool {
-        *self == Color::Red
+    fn rotate<K, V>(self, key: K, value: V, left: Link<K, V>, right: Link<K, V>) -> Link<K, V>
+                    where K: Clone + PartialOrd + Ord, V: Clone {
+        if self.is_red() {
+            if left.is_empty_or_double_black() {
+                if let Some(right) = right.get_if_black() {
+                    return Color::Black.balance(right.key.clone(),
+                                                right.value.clone(),
+                                                Link::Node(Arc::new(Node {
+                                                    color: Color::Red,
+                                                    key: key,
+                                                    value: value,
+                                                    left: left.double_black_to_black(),
+                                                    right: right.left.clone(),
+                                                })),
+                                                right.right.clone())
+                }
+            }
+            if right.is_empty_or_double_black() {
+                if let Some(left) = left.get_if_black() {
+                    return Color::Black.balance(left.key.clone(),
+                                                left.value.clone(),
+                                                left.left.clone(),
+                                                Link::Node(Arc::new(Node {
+                                                    color: Color::Red,
+                                                    key: key,
+                                                    value: value,
+                                                    left: left.right.clone(),
+                                                    right: right.double_black_to_black(),
+                                                })))
+                }
+            }
+        } else if self.is_black() {
+            if left.is_empty_or_double_black() {
+                // Second case, Figure 7
+                if let Some(right) = right.get_if_black() {
+                    return Color::DoubleBlack.balance(right.key.clone(),
+                                                      right.value.clone(),
+                                                      Link::Node(Arc::new(Node {
+                                                          color: Color::Red,
+                                                          key: key,
+                                                          value: value,
+                                                          left: left.double_black_to_black(),
+                                                          right: right.left.clone(),
+                                                      })),
+                                                      right.right.clone())
+                }
+                // Third case, Figure 9
+                if let Some(right) = right.get_if_red() {
+                    if let Some(right_left) = right.left.get_if_black() {
+                        return Link::Node(Arc::new(Node {
+                            color: Color::Black,
+                            key: right.key.clone(),
+                            value: right.value.clone(),
+                            left: Color::Black.balance(right_left.key.clone(),
+                                                       right_left.value.clone(),
+                                                       Link::Node(Arc::new(Node {
+                                                           color: Color::Red,
+                                                           key: key,
+                                                           value: value,
+                                                           left: left.double_black_to_black(),
+                                                           right: right_left.left.clone(),
+                                                       })),
+                                                       right_left.right.clone()),
+                            right: right.right.clone(),
+                        }))
+                    }
+                }
+            }
+            if right.is_empty_or_double_black() {
+                // Second case, Figure 7
+                if let Some(left) = left.get_if_black() {
+                    return Color::DoubleBlack.balance(left.key.clone(),
+                                                      left.value.clone(),
+                                                      left.left.clone(),
+                                                      Link::Node(Arc::new(Node {
+                                                          color: Color::Red,
+                                                          key: key,
+                                                          value: value,
+                                                          left: left.right.clone(),
+                                                          right: right.double_black_to_black(),
+                                                      })))
+                }
+                // Third case, Figure 9
+                if let Some(left) = left.get_if_red() {
+                    if let Some(left_right) = left.right.get_if_black() {
+                        return Link::new(Arc::new(Node {
+                            color: Color::Black,
+                            key: left.key.clone(),
+                            value: left.value.clone(),
+                            left: left.left.clone(),
+                            right: Color::Black.balance(left_right.key.clone(),
+                                                        left_right.value.clone(),
+                                                        left_right.left.clone(),
+                                                        Link::Node(Arc::new(Node {
+                                                            color: Color::Red,
+                                                            key: key,
+                                                           value: value,
+                                                            left: left_right.right.clone(),
+                                                            right: right.double_black_to_black(),
+                                                        }))),
+                        }))
+                    }
+                }
+            }
+        }
+
+        Link::Node(Arc::new(Node {
+            key: key,
+            value: value,
+            left: left,
+            right: right,
+            color: self,
+        }))
     }
 
-    fn is_black(&self) -> bool {
-        *self == Color::Black
+    fn is_red(self) -> bool {
+        self == Color::Red
+    }
+
+    fn is_black(self) -> bool {
+        self == Color::Black
+    }
+
+    fn is_double_black(self) -> bool {
+        self == Color::DoubleBlack
     }
 }
 
@@ -299,7 +479,7 @@ impl<K, V> Debug for Tree<K, V> where K: Clone + PartialOrd + Ord + Debug, V: Cl
         if let Some(pair) = iter.next() {
             try!(pair.fmt(formatter));
             for pair in iter {
-                try!(write!(formatter, ",{:?}", pair))
+                try!(write!(formatter, ", {:?}", pair))
             }
         }
         write!(formatter, "]")
