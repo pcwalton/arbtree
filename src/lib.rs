@@ -1,5 +1,17 @@
+use std::borrow::Borrow;
 use std::cmp::Ordering;
+use std::fmt::{self, Debug, Formatter};
+use std::iter::FromIterator;
 use std::sync::Arc;
+
+#[cfg(test)]
+extern crate rand;
+#[cfg(test)]
+#[macro_use]
+extern crate quickcheck;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Clone)]
 pub struct Tree<K, V> {
@@ -34,14 +46,51 @@ impl<K, V> Tree<K, V> where K: Clone + PartialOrd + Ord, V: Clone {
         }
     }
 
+    pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&V> where K: Borrow<Q>, Q: Ord {
+        self.get_by(|node_key| key.cmp(node_key.borrow())).map(|(_, v)| v)
+    }
+
+    pub fn get_by<F>(&self, compare: F) -> Option<(&K, &V)>
+                     where F: for<'a> FnMut(&'a K) -> Ordering {
+        self.root.get_by(compare)
+    }
+
     pub fn insert(&self, key: K, value: V) -> Tree<K, V> {
         Tree {
             root: self.root.insert(key, value),
         }
     }
+
+    pub fn iter<'a>(&'a self) -> Iter<'a, K, V> {
+        Iter {
+            start: self.root.to_option(),
+            stack: vec![],
+        }
+    }
 }
 
 impl<K, V> Link<K, V> where K: Clone + PartialOrd + Ord, V: Clone {
+    fn to_option(&self) -> Option<&Arc<Node<K, V>>> {
+        match *self {
+            Link::Empty => None,
+            Link::Node(ref node) => Some(node),
+        }
+    }
+
+    fn get_by<F>(&self, mut compare: F) -> Option<(&K, &V)>
+                 where F: for<'a> FnMut(&'a K) -> Ordering {
+        match *self {
+            Link::Empty => None,
+            Link::Node(ref node) => {
+                match compare(&node.key) {
+                    Ordering::Less => node.left.get_by(compare),
+                    Ordering::Greater => node.right.get_by(compare),
+                    Ordering::Equal => Some((&node.key, &node.value)),
+                }
+            }
+        }
+    }
+
     fn insert(&self, key: K, value: V) -> Link<K, V> {
         match *self {
             Link::Empty => {
@@ -205,122 +254,55 @@ impl Color {
     }
 }
 
-struct Iter<'a, K, V> {
-    /*
-    phase: IterPhase<'a, K, V>,
-    stack: Vec<IterStep<'a, K, V>>,
-    */
+pub struct Iter<'a, K, V> where K: 'a, V: 'a {
     start: Option<&'a Arc<Node<K, V>>>,
     stack: Vec<&'a Arc<Node<K, V>>>,
 }
 
-/*
-enum IterPhase<'a, K, V> {
-    Start(&'a Arc<Node<K, V>>),
-    Emit(&'a Arc<Node<K, V>>),
-    Stop,
-}
-
-enum IterStep<'a, K, V> {
-    Left(&'a Arc<Node<K, V>>),
-    Right(&'a Arc<Node<K, V>>),
-}*/
-
-impl<'a, K, V> Iterator for Iter<'a, K, V> {
+impl<'a, K, V> Iterator for Iter<'a, K, V> where K: Clone + PartialOrd + Ord, V: Clone {
     type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<(&'a K, &'a V)> {
-        let mut node = self.start.take();
-        while !self.stack.is_empty() || node.is_some() {
-            match node {
+        let mut current = self.start.take();
+        while !self.stack.is_empty() || current.is_some() {
+            match current {
                 Some(node) => {
                     self.stack.push(node);
-                    node = node.left
+                    current = node.left.to_option()
                 }
                 None => {
-                    node = self.stack.pop();
+                    let node = self.stack.pop().unwrap();
                     let item = (&node.key, &node.value);
-                    self.start = node.right.as_ref();
+                    self.start = node.right.to_option();
                     return Some(item)
                 }
             }
         }
         None
+    }
+}
 
-        /*
-        match self.phase {
-            IterPhase::Start(mut node) => {
-                loop {
-                    match node.left {
-                        Link::Node(left) => {
-                            self.stack.push(IterStep::Left(node));
-                            node = left
-                        }
-                        Link::Empty => {
-                            self.phase = IterPhase::Emit(node);
-                            return Some(node)
-                        }
-                    }
-                }
-            }
-            IterPhase::Emit(mut node) => {
-                loop {
-                    match node.right {
-                        Link::Node(right) => {
-                            self.stack.push(IterStep::Right(node));
-                            node = right;
-                            break
-                        }
-                        Link::Empty => {
-                            loop {
-                                match self.stack.pop() {
-                                    Some(IterStep::Left(node)) => {
-                                        self.phase = IterPhase::Emit(node);
-                                        return Some(node)
-                                    }
-                                    Some(IterStep::Right(node)) => {}
-                                    None => {
-                                        self.phase = IterPhase::Stop;
-                                        return None
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    match node.left {
-                        None => {
-                            self.phase = IterPhase::Emit(node);
-                            return Some(node)
-                        }
-                        Some(left) => {
+impl<K, V> FromIterator<(K, V)> for Tree<K, V> where K: Clone + PartialOrd + Ord, V: Clone {
+    fn from_iter<T>(iter: T) -> Tree<K, V> where T: IntoIterator<Item = (K, V)> {
+        let mut tree = Tree::new();
+        for (key, value) in iter {
+            tree = tree.insert(key, value)
+        }
+        tree
+    }
+}
 
-                        }
-                    }
-                }
+impl<K, V> Debug for Tree<K, V> where K: Clone + PartialOrd + Ord + Debug, V: Clone + Debug {
+    fn fmt(&self, formatter: &mut Formatter) -> Result<(), fmt::Error> {
+        try!(write!(formatter, "["));
+        let mut iter = self.iter();
+        if let Some(pair) = iter.next() {
+            try!(pair.fmt(formatter));
+            for pair in iter {
+                try!(write!(formatter, ",{:?}", pair))
             }
         }
-        let next = self.next.take() {
-            None => return None,
-            Some(next) => next,
-        };
-
-        loop {
-            let step = match self.stack.pop() {
-                None => return None,
-                Some(step) => step,
-            };
-            match *step {
-                IterStep::Left(left) => {
-                    match left.right {
-                        None => continue,
-                        Some(ref right) => {
-                            self.stack.push(right);
-
-                        }
-                    }
-                }
-            }
-        }*/
+        write!(formatter, "]")
     }
 }
 

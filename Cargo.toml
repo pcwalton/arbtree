@@ -1,0 +1,11 @@
+[package]
+name = "arbtree"
+version = "0.1.0"
+authors = ["Patrick Walton <pcwalton@mimiga.net>"]
+
+[dependencies]
+
+[dev-dependencies]
+quickcheck = "0.4"
+rand = "0.3"
+
